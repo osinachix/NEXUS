@@ -1,7 +1,7 @@
 [project]
-name = "langgraph-tutorial"
+name = "multi-agent-router"
 version = "0.1.0"
-description = "Add your description here"
+description = "A LangGraph chatbot that classifies each message and routes it to a specialist agent (counselor, logical, math, or coding)."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

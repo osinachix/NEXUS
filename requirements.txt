@@ -1,0 +1,4 @@
+ipykernel>=6.29.5
+langchain[anthropic]>=0.3.24
+langgraph>=0.3.34
+python-dotenv>=1.1.0
