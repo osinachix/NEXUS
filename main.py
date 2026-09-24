@@ -1,8 +1,12 @@
+import asyncio
+import sys
 from dotenv import load_dotenv
 from typing import Annotated, Literal
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
@@ -11,6 +15,17 @@ load_dotenv()
 llm = init_chat_model(
     "anthropic:claude-3-5-sonnet-latest"
 )
+
+mcp_client = MultiServerMCPClient({
+    "fetch": {
+        "command": sys.executable,
+        "args": ["-m", "mcp_server_fetch"],
+        "transport": "stdio",
+    }
+})
+
+# Built once at startup in run_chatbot(), after the MCP tools are loaded.
+logical_react_agent = None
 
 
 class MessageClassifier(BaseModel):
@@ -75,22 +90,13 @@ def counselor_agent(state: State):
     return {"messages": [{"role": "assistant", "content": reply.content}]}
 
 
-def logical_agent(state: State):
+async def logical_agent(state: State):
     last_message = state["messages"][-1]
 
-    messages = [
-        {"role": "system",
-         "content": """You are a purely logical assistant. Focus only on facts and information.
-            Provide clear, concise answers based on logic and evidence.
-            Do not address emotions or provide emotional support.
-            Be direct and straightforward in your responses."""
-         },
-        {
-            "role": "user",
-            "content": last_message.content
-        }
-    ]
-    reply = llm.invoke(messages)
+    result = await logical_react_agent.ainvoke({
+        "messages": [{"role": "user", "content": last_message.content}]
+    })
+    reply = result["messages"][-1]
     return {"messages": [{"role": "assistant", "content": reply.content}]}
 
 
@@ -157,7 +163,21 @@ graph_builder.add_edge("coding", END)
 graph = graph_builder.compile()
 
 
-def run_chatbot():
+async def run_chatbot():
+    global logical_react_agent
+
+    mcp_tools = await mcp_client.get_tools(server_name="fetch")
+    logical_react_agent = create_agent(
+        llm,
+        mcp_tools,
+        system_prompt="""You are a purely logical assistant. Focus only on facts and information.
+            Use the fetch tool to look up current or specific information from the web
+            whenever it would make your answer more accurate.
+            Provide clear, concise answers based on logic and evidence.
+            Do not address emotions or provide emotional support.
+            Be direct and straightforward in your responses."""
+    )
+
     state = {"messages": [], "message_type": None}
 
     while True:
@@ -170,7 +190,7 @@ def run_chatbot():
             {"role": "user", "content": user_input}
         ]
 
-        state = graph.invoke(state)
+        state = await graph.ainvoke(state)
 
         if state.get("messages") and len(state["messages"]) > 0:
             last_message = state["messages"][-1]
@@ -178,4 +198,4 @@ def run_chatbot():
 
 
 if __name__ == "__main__":
-    run_chatbot()
+    asyncio.run(run_chatbot())
