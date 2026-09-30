@@ -2,3 +2,10 @@
 __pycache__/
 *.pyc
 .venv/
+
+# NEXUS runtime checkpointer state (local dev SQLite DB + WAL sidecar files)
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+.pytest_cache/

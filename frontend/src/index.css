@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+@theme {
+  /* Surfaces: a restrained near-black scale, not pure black, so panels
+     read as distinct layers without relying on borders alone. */
+  --color-surface-0: #08090c;
+  --color-surface-1: #0d0f13;
+  --color-surface-2: #14161c;
+  --color-surface-3: #1b1e26;
+  --color-surface-4: #262a35;
+
+  --color-border-subtle: #21242c;
+  --color-border-default: #2c303b;
+  --color-border-strong: #3a3f4d;
+
+  --color-text-primary: #e6e8ec;
+  --color-text-secondary: #9aa0ae;
+  --color-text-muted: #676d7c;
+
+  /* A single restrained accent (cool cyan) used sparingly: active states,
+     the running-execution pulse, links. Not a rainbow of status colors. */
+  --color-accent: #4fd1c5;
+  --color-accent-dim: #2c7a72;
+  --color-accent-subtle: #17302e;
+
+  --color-status-success: #4ade80;
+  --color-status-success-subtle: #12261a;
+  --color-status-warning: #fbbf24;
+  --color-status-warning-subtle: #2b2311;
+  --color-status-danger: #f87171;
+  --color-status-danger-subtle: #2b1717;
+  --color-status-pending: #676d7c;
+
+  --font-sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+
+  --animate-pulse-ring: pulse-ring 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  @keyframes pulse-ring {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-surface-0);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-dim);
+    color: var(--color-surface-0);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--color-border-strong);
+    border-radius: 4px;
+  }
+}

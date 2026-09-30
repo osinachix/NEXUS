@@ -1,0 +1,46 @@
+{
+  "name": "baseline",
+  "version": "1.0.0",
+  "description": "Small, deterministic framework-validation dataset covering all four NEXUS routes (emotional/counselor, logical, math, coding). Not a benchmark -- kept deliberately small.",
+  "cases": [
+    {
+      "id": "math-basic-001",
+      "name": "Basic arithmetic",
+      "input": "What is 17 * 23?",
+      "expected_route": "math",
+      "response_contains": ["391"],
+      "metadata": {"category": "math"}
+    },
+    {
+      "id": "coding-basic-001",
+      "name": "Python coding request",
+      "input": "Write a Python function that reverses a string.",
+      "expected_route": "coding",
+      "response_contains": ["def "],
+      "forbidden_tools": ["fetch"],
+      "metadata": {"category": "coding"}
+    },
+    {
+      "id": "logical-basic-001",
+      "name": "Fetch and reason",
+      "input": "Fetch https://example.com and summarize what the page says.",
+      "expected_route": "logical",
+      "expected_tools": ["fetch"],
+      "metadata": {"category": "logical"}
+    },
+    {
+      "id": "logical-no-fetch-001",
+      "name": "Logical question needing no tool",
+      "input": "Is the statement 'all squares are rectangles' logically true?",
+      "expected_route": "logical",
+      "metadata": {"category": "logical"}
+    },
+    {
+      "id": "emotional-basic-001",
+      "name": "Emotional support request",
+      "input": "I've been feeling really overwhelmed and anxious about work lately.",
+      "expected_route": "counselor",
+      "metadata": {"category": "emotional"}
+    }
+  ]
+}
