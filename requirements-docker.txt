@@ -1,0 +1,27 @@
+# Backend dependencies for the NEXUS production container image (Phase 7).
+#
+# Mirrors requirements.txt / pyproject.toml's [project.dependencies], plus
+# pyproject.toml's optional `postgres` extra -- the container image supports
+# BOTH the SQLite and PostgreSQL backends in one image, selected at runtime
+# by whether NEXUS_DATABASE_URL is set (see runtime.create_runtime). This
+# keeps the image environment-driven rather than requiring two separate
+# builds for the two backends.
+#
+# Deliberately excludes ipykernel: a local Jupyter/notebook convenience
+# dependency declared in pyproject.toml/requirements.txt for interactive
+# development. It is not imported by any application module (api.py,
+# main.py, runtime.py, tool_policy.py, ...) and is not needed to run the
+# API, so it is left out of the production image to keep it minimal.
+#
+# Version floors are kept identical to requirements.txt / pyproject.toml's
+# postgres extra -- update all three together if a floor changes.
+langchain[anthropic]>=0.3.24
+langgraph>=0.3.34
+python-dotenv>=1.1.0
+tenacity>=9.0.0
+langgraph-checkpoint-sqlite>=3.0.0
+httpx>=0.27.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary,pool]>=3.1.0

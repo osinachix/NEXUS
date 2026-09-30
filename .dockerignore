@@ -1,0 +1,33 @@
+# Backend build context exclusions (Phase 7). Keeps the image build fast
+# and keeps anything secret/local/dev-only out of the build context
+# entirely -- not just out of the final image (COPY in the Dockerfile is
+# already selective, this is defense in depth at the context level).
+
+.git
+.gitignore
+.dockerignore
+
+# Secrets and local configuration -- never enter the build context.
+.env
+.env.*
+!.env.docker.example
+
+# Python environment / caches.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+
+# Not needed to build/run the API image (the Dockerfile COPYs only the
+# specific backend modules and evals/ it actually needs).
+tests/
+frontend/
+
+# Editor / OS cruft.
+.vscode/
+.idea/
+.DS_Store

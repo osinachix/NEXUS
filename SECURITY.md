@@ -474,3 +474,68 @@ remains authoritative. No raw tool arguments or results are returned or rendered
 Run and evaluation counts/metrics are limited to bounded process-local stores and clear on restart
 or eviction. The Dashboard labels unavailable usage/cost and partial measurements instead of treating
 unknown values as zero or implying durable historical analytics.
+
+## 22. Phase 7 - container and CI security review
+
+Phase 7 packages the existing platform (Dockerfile, `docker-compose.yml`, GitHub Actions CI). It
+changes no runtime security control described in this document - no tool policy, no SSRF check, no
+authentication/authorization logic, no rate limiter behavior. This section is the security review
+of the packaging itself, per the same principles as the rest of this document (deterministic,
+never trust the model, least privilege).
+
+**Non-root execution.** The backend image runs as a dedicated `nexus` system user/group (not
+`root`, no login shell) created in the Dockerfile; the application process and every file it owns
+under `/app` run as that user. The frontend image runs `nginx`, whose worker processes already drop
+to an unprivileged `nginx` user by the base image's own default configuration - the master process
+retains root only to bind port 80 and manage workers, an upstream default this phase did not
+change or need to change.
+
+**No secrets in either image.** Both Dockerfiles copy only application source (`COPY` lists named
+files/directories explicitly; `.dockerignore` additionally excludes `.env`/`.env.*` and other local
+artifacts from the build context as defense in depth). Every credential
+(`NEXUS_API_TOKEN`/`ANTHROPIC_API_KEY`/`NEXUS_DATABASE_URL`) is supplied at container/Compose start,
+never as a Dockerfile `ARG`/`ENV` default and never baked into a layer. `.env.docker` (the real,
+filled-in Compose environment file) is gitignored; `.env.docker.example`, the checked-in template,
+contains only placeholder values (`change-me`, `your-key-here`).
+
+**Fail-closed production default.** The backend image sets `NEXUS_ENVIRONMENT=production` by
+default (not `development`), so the existing `config.load_config()` rule from
+[SECURITY.md §16](#16-authentication---implemented) applies out of the box: the container refuses
+to start at all if `NEXUS_API_TOKEN` is not also supplied. A deployer cannot accidentally ship this
+image in silently-unauthenticated development mode merely by forgetting a variable - forgetting one
+produces a startup failure, not an open API.
+
+**PostgreSQL is not exposed unnecessarily.** `docker-compose.yml` binds PostgreSQL's port to
+`127.0.0.1:5432`, not `0.0.0.0:5432` - reachable from the host machine for local inspection, not
+from the network. The same applies to the API's published port (`127.0.0.1:8000`). A real multi-host
+deployment would need its own network/firewall design; this Compose file is a local development/
+validation stack, not a network topology recommendation.
+
+**CORS remains exact-origin, unchanged.** The Compose `api` service still reads
+`NEXUS_CONSOLE_ORIGINS` exactly as the non-containerized deployment does (see
+[§ Authorization (Phase 5)](#17-authorization---implemented) and README "Configuration") - Phase 7
+introduces no new default that broadens this beyond the existing Vite-dev-port default, and no
+container configuration can widen it to `*`.
+
+**CI requires no real credential.** `.github/workflows/ci.yml`'s backend and PostgreSQL-integration
+jobs run with no `ANTHROPIC_API_KEY` at all - verified locally (see
+ARCHITECTURE.md's Phase 7 section) that the full suite, including `import main`, passes with the key
+entirely absent. The `docker-build` job's Compose smoke test uses an intentionally fake, clearly
+non-functional placeholder key (`sk-ant-ci-placeholder-not-a-real-key`) and deliberately stops
+before sending a message (the one action that would reach a model provider), specifically to avoid
+depending on a real external API - see that job's inline comments. The repository-hygiene job's
+credential-pattern scan runs on every push/PR.
+
+**Known Phase 7 limitations, stated plainly:**
+
+- Neither Dockerfile pins base-image digests (only tags: `python:3.13-slim`, `node:20-alpine`,
+  `nginx:1.27-alpine`, `postgres:16-alpine`) - a supply-chain hardening step (digest pinning,
+  image scanning) that is future work, not silently assumed to be covered here.
+- No image vulnerability scanning is configured in CI.
+- `docker-compose.yml` is a local/validation stack, not a hardened multi-host network design - see
+  above.
+- The container/Compose/live-PostgreSQL behavior this section describes was authored and reviewed
+  statically; it was not built or run in this development environment (no Docker, no PostgreSQL
+  installation available here) - see ARCHITECTURE.md's Phase 7 section for the exact verification
+  boundary. This is an honesty note, not a claim that the design is untested in principle: the CI
+  workflow is written to exercise it for real on the next push/PR.

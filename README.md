@@ -55,6 +55,7 @@ model and every control's implementation/test status, see **[SECURITY.md](SECURI
 - [Running the project](#running-the-project)
 - [Running the API server](#running-the-api-server)
 - [Running with PostgreSQL](#running-with-postgresql)
+- [Running with Docker](#running-with-docker)
 - [Running the Console](#running-the-console)
 - [Running an evaluation](#running-an-evaluation)
 - [Running the tests](#running-the-tests)
@@ -80,7 +81,7 @@ model and every control's implementation/test status, see **[SECURITY.md](SECURI
 | 6.6 | NEXUS Console: Tools / Governance | **IMPLEMENTED; BROWSER VERIFICATION BLOCKED BY LOCAL RENDERER** |
 | 6.7 | NEXUS Console: Run Comparison + Re-run | **IMPLEMENTED; AUTOMATED VERIFICATION COMPLETE** |
 | 6.8 | NEXUS Console: Dashboard + Console Polish | **IMPLEMENTED; AUTOMATED VERIFICATION COMPLETE** |
-| 7 | Production Packaging | planned |
+| 7 | Production Packaging | **IMPLEMENTED; NOT YET LIVE-VERIFIED (NO DOCKER/POSTGRESQL IN THIS DEV ENVIRONMENT; CI AUTHORED TO VALIDATE BOTH, NOT YET OBSERVED RUNNING)** |
 
 - **Phase 0 - Correctness & Hardening (complete)** - typed state, pinned model, bounded
   retries/timeouts, error handling with safe fallbacks, initial test suite.
@@ -918,6 +919,11 @@ All of the following are optional environment variables (read via `os.getenv`, l
 | `NEXUS_TEST_DATABASE_URL` | *(unset = Postgres integration tests skipped)* | Test-only: a real, reachable PostgreSQL connection string to run the Postgres integration tests (`tests/test_postgres_backend.py`) against. Never used by application code. |
 | `NEXUS_CONSOLE_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated exact-origin allowlist (Phase 6.1) for CORS - which browser origins may call this API directly. The default covers Vite's standard local dev ports; set this for any other Console deployment origin. Read once at process startup (see api.py's CORS comment for why). |
 
+Phase 7 introduces no new application environment variables - the container image and Compose
+stack read exactly this same set at container start (see
+[Running with Docker](#running-with-docker)); `.env.docker.example` documents which of them a
+Compose deployment needs to supply.
+
 **Why pin the model instead of using `-latest`?** A floating alias like
 `anthropic:claude-3-5-sonnet-latest` is repointed by Anthropic without notice, so identical code
 can silently start calling a different model. That breaks reproducibility (two runs of "the same"
@@ -1003,13 +1009,27 @@ gaps - not oversights, but explicitly out of scope so far:
   for large evaluations is future work.
 - **No network-level egress control**: SSRF checks are application-level (NEXUS resolving and
   validating before connecting); there is no host firewall or egress proxy layer.
-- **No CI/CD, containerization, or deployment configuration.**
-- **The PostgreSQL backend was not verified against a live database in this environment** - no
-  PostgreSQL/Docker was available; see [Tests](#running-the-tests) and the Phase 5 report for
-  exactly what was and wasn't exercised. On Windows specifically, `psycopg`'s async mode requires a
-  `SelectorEventLoop` (Python's default on Windows is `ProactorEventLoop`) - set
+- **Phase 7 containerization/CI is a deployment foundation, not a production deployment**: a
+  backend Dockerfile, a frontend Dockerfile, a local Compose stack (API + PostgreSQL + Console),
+  and a GitHub Actions CI workflow exist (see [Running with Docker](#running-with-docker)), but
+  there is no TLS termination, reverse proxy, secrets manager, autoscaling, or real cloud deployment
+  target. "Production packaging" describes what ships in the image/Compose file, not a claim that
+  the resulting deployment is hardened for real production traffic.
+- **The PostgreSQL backend, the backend/frontend container images, and the Compose stack were not
+  live-verified in this development environment** - it has neither Docker nor a local PostgreSQL
+  installation available. This is an environment limitation, not a design limitation: the CI
+  workflow (`.github/workflows/ci.yml`) builds both images, runs a Compose health/readiness/
+  authentication smoke test, and runs the existing `tests/test_postgres_backend.py` integration
+  suite (LLM calls stubbed) against a real, disposable PostgreSQL service container, un-skipping the
+  4 tests skipped locally - but that workflow had not yet been observed running as of this writing
+  (see [Running with Docker](#running-with-docker)). On Windows specifically, `psycopg`'s async mode
+  requires a `SelectorEventLoop` (Python's default on Windows is `ProactorEventLoop`) - set
   `asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())` before starting the app
-  if running the Postgres backend on Windows; this restriction does not apply on Linux/macOS.
+  if running the Postgres backend directly on native Windows (outside Docker); this does not affect
+  the Docker/Compose path, since containers always run Linux, or Linux/macOS deployments generally.
+- **Browser verification for Console Phases 6.6-6.8 remains blocked by the local browser renderer
+  environment** - unrelated to Phase 7, carried forward from earlier phases; see
+  [NEXUS Console](#nexus-console).
 
 These are planned for later phases, not fixed here. Full detail (including which controls are
 already IMPLEMENTED vs. still PLANNED) is in [SECURITY.md](SECURITY.md).
@@ -1208,7 +1228,76 @@ import asyncio
 asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 ```
 
-This restriction is specific to Windows; Linux/macOS deployments are unaffected.
+This restriction is specific to Windows; Linux/macOS deployments are unaffected. **It does not apply
+to the Docker path below**: container images always run Linux (`python:3.13-slim`), so
+`ProactorEventLoop` never enters the picture even when Docker Desktop's host is Windows.
+
+## Running with Docker
+
+Phase 7 adds a production-oriented container image and a local, production-like Compose stack -
+this is a **deployment foundation, not a claim of "production-ready"**; see
+[Known limitations](#known-limitations) below and ARCHITECTURE.md's Phase 7 section for exactly
+what is and isn't covered.
+
+**Backend image** (`Dockerfile`, root of the repo): a two-stage build producing a minimal image
+that runs `uvicorn api:app` as a non-root user. Dependencies come from `requirements-docker.txt` -
+the same runtime dependencies as `requirements.txt`/`pyproject.toml` plus the `postgres` extra
+(so one image supports both backends, selected at runtime by `NEXUS_DATABASE_URL`, exactly as
+[Running with PostgreSQL](#running-with-postgresql) above), minus `ipykernel` (a notebook-only
+dependency never imported by the API). Nothing is baked into the image: every environment variable
+in [Configuration](#configuration) is supplied at container start, never at build time, and no
+secret is ever copied into a layer.
+
+```bash
+docker build -t nexus-api .
+docker run --rm -p 8000:8000 \
+  -e NEXUS_API_TOKEN=your-token \
+  -e ANTHROPIC_API_KEY=your-key \
+  nexus-api
+```
+
+The image's `HEALTHCHECK` polls the existing `GET /ready` endpoint (a real checkpointer round
+trip, no LLM call) - not a separate mechanism invented for Docker.
+
+**Frontend image** (`frontend/Dockerfile`): builds the existing Vite production bundle
+(`npm run build`, unchanged) and serves the static output with nginx. `VITE_NEXUS_API_BASE_URL` is
+a Vite **build-time** value baked into the compiled JS (see `frontend/src/lib/config.ts`), passed
+as a Docker build argument:
+
+```bash
+docker build -t nexus-console --build-arg VITE_NEXUS_API_BASE_URL=http://localhost:8000 ./frontend
+docker run --rm -p 5173:80 nexus-console
+```
+
+`VITE_NEXUS_API_TOKEN` is deliberately not accepted as a build argument here - per
+[NEXUS Console](#nexus-console) and CLAUDE.md, that value is not a secret but is only appropriate
+for a trusted local/demo browser, never baked into a shared or distributed image.
+
+**Compose stack** (`docker-compose.yml`): brings up PostgreSQL, the API (configured with
+`NEXUS_DATABASE_URL` pointing at it), and the Console together, exercising the exact same
+`AsyncPostgresSaver`/`access.PostgresAccessStore` code path as the non-Docker
+[Running with PostgreSQL](#running-with-postgresql) section - not a second persistence
+implementation.
+
+```bash
+cp .env.docker.example .env.docker   # then fill in real values - never commit .env.docker
+docker compose --env-file .env.docker up --build
+```
+
+PostgreSQL is bound to `127.0.0.1:5432` only (not `0.0.0.0`), matching the "don't expose PostgreSQL
+unnecessarily" principle - see SECURITY.md's Phase 7 section.
+
+**What has and hasn't been live-verified**: this environment has neither Docker nor a local
+PostgreSQL installation available, so the image build, the Compose stack, and live PostgreSQL
+behavior (checkpoint/ownership persistence across a real restart) have not been executed or
+observed in this development environment. They have not been fabricated either - see
+[Known limitations](#known-limitations). The CI workflow (`.github/workflows/ci.yml`) builds both
+images and runs a Compose health/readiness/authentication smoke test, and separately runs the
+existing `tests/test_postgres_backend.py` integration suite against a real, disposable PostgreSQL
+service container - un-skipping the 4 tests that are skipped in this local environment. That
+workflow is written to real, documented GitHub Actions/Docker Compose semantics, but has not yet
+been observed running (no push/PR has triggered it as of this writing) - do not treat this section
+as proof it has run successfully until an actual CI run has been reviewed.
 
 ## Running the Console
 
@@ -1362,7 +1451,24 @@ that `access.PostgresAccessStore` issues the expected SQL) - see that file's mod
 - `requirements-dev.txt`: adds test-only dependencies (`pytest`, `pytest-asyncio`)
 - `pyproject.toml`: project metadata, dependencies (including the optional `postgres` extra), and
   pytest configuration
+- `Dockerfile` (Phase 7): production-oriented backend image - two-stage build, non-root user, runs
+  `uvicorn api:app`; see [Running with Docker](#running-with-docker)
+- `requirements-docker.txt` (Phase 7): the backend image's dependency list - mirrors
+  `requirements.txt` plus the `postgres` extra, minus the notebook-only `ipykernel`
+- `.dockerignore` (Phase 7): backend image build-context exclusions (secrets, `.venv`, `tests/`,
+  `frontend/`, caches)
+- `docker-compose.yml` (Phase 7): local, production-like stack - PostgreSQL, the API (configured
+  with `NEXUS_DATABASE_URL`), and the Console; see [Running with Docker](#running-with-docker)
+- `.env.docker.example` (Phase 7): checked-in placeholder template for `docker-compose.yml`'s
+  required variables - copy to `.env.docker` (gitignored) and fill in real values
+- `.github/workflows/ci.yml` (Phase 7): GitHub Actions CI - backend pytest, frontend
+  tests/lint/build, a live-PostgreSQL integration job (disposable service container, LLM calls
+  stubbed), a repository-hygiene job (credential/em-dash/merge-conflict scans), and a job that
+  builds both container images and smoke-tests the Compose stack
 - `frontend/` (Phase 6.1-6.6): the NEXUS Console.
+  - `Dockerfile`/`nginx.conf`/`.dockerignore` (Phase 7): production static build (the existing
+    `npm run build`) served by nginx - no Node.js runtime in the final image; see
+    [Running with Docker](#running-with-docker)
   - `src/lib/`: `apiClient.ts` (typed HTTP client for agents, tools, runs, sessions, evaluations, and
     comparison), `sseClient.ts` + `sseParser.ts` (the dedicated
     SSE streaming client - hand-rolled since browser `EventSource` can't do POST+auth headers),
@@ -1493,7 +1599,14 @@ re-run, and the Dashboard. Browser verification for Phases 6.6 through 6.8 remai
 local browser renderer. Remaining Console polish should use the existing APIs and runtime model. See the
 [Roadmap](#roadmap).
 
+Phase 7 (production packaging) is implemented: a backend Dockerfile, a frontend Dockerfile, a local
+Compose stack (API + PostgreSQL + Console) exercising the existing Phase 5 Postgres backend, and a
+GitHub Actions CI workflow that builds both images and runs the PostgreSQL integration suite against
+a live, disposable database. The first actual CI run and any real Docker/PostgreSQL environment
+should be used to observe and confirm what this session could only author and statically verify -
+see [Running with Docker](#running-with-docker) and [Known limitations](#known-limitations).
+
 Other future work includes deterministic replay, a distributed rate limiter, a background job/queue
 for larger evaluations, persistent RunStore/EvaluationStore history, real user accounts/OAuth/SSO/RBAC,
-and production packaging. These items remain outside the current Console phase unless a later scope
-explicitly includes them.
+TLS termination/reverse proxy/secrets-manager integration, and a real cloud deployment target. These
+items remain outside the current scope unless explicitly requested.

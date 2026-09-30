@@ -78,13 +78,24 @@ nothing here assumes a particular business, industry, or deployment target. Comp
   and thread IDs. It reuses authentication, rate limiting, and ownership checks. No analytics service
   or new persistence was introduced. The sidebar adds an accessible compact layout at narrow widths.
   See [NEXUS Console (Phase 6.8: Dashboard + Console Polish)](#nexus-console-phase-68-dashboard--console-polish).
+- **Phase 7 (implemented; not yet live-verified):** a backend Dockerfile (two-stage, non-root,
+  environment-driven), a frontend Dockerfile (Vite production build served by nginx), a local
+  Compose stack (PostgreSQL + API + Console) exercising the existing Phase 5 Postgres backend, and a
+  GitHub Actions CI workflow (backend/frontend tests, a live-PostgreSQL integration job, a
+  repository-hygiene job, and a container-build/Compose-smoke-test job). This development
+  environment has neither Docker nor PostgreSQL installed, so the image builds, the Compose stack,
+  and live PostgreSQL behavior were authored and statically reviewed but not executed or observed
+  here - see [Production packaging (Phase 7)](#production-packaging-phase-7) below and README
+  "Known limitations".
 - **Not implemented:** broader metrics, RAG, advanced/semantic memory, human-in-the-loop, model routing,
-  deterministic replay, OAuth/SSO/RBAC, a distributed rate limiter. See README
+  deterministic replay, OAuth/SSO/RBAC, a distributed rate limiter, TLS termination/reverse proxy/
+  secrets-manager integration, a real cloud deployment target. See README
   "Known limitations" and "Recommended next steps".
 
 This is a learning/interview project. It is **not production-ready** - a **production-oriented
-foundation** - at the end of Phase 6.8. Browser verification for the latest Console surfaces remains
-blocked by the local renderer environment.
+foundation** - at the end of Phase 7. Browser verification for the latest Console surfaces remains
+blocked by the local renderer environment; Phase 7's container/Compose/live-PostgreSQL behavior
+remains blocked by this development environment lacking Docker/PostgreSQL (see below).
 
 ## Layered view
 
@@ -1564,3 +1575,104 @@ production build succeeded. Configured lint exited successfully with existing wa
 new Phase 6.8 files. One real-browser attempt after implementation was blocked by the local renderer;
 responsive behavior is covered by layout classes and automated tests but not visually verified in
 this browser environment.
+
+## Production packaging (Phase 7)
+
+Phase 7 packages the existing platform for deployment. It changes nothing about `NexusRuntime`,
+`api.py`, `main.py`'s graph, or any Console feature - every file this section describes is new
+(a Dockerfile, a Compose file, a CI workflow) or a documentation update. The architectural rule
+this phase must not violate: **a container is a deployment wrapper, not a second runtime.** The
+backend image's only job is running `uvicorn api:app` - the exact ASGI app object `api.py` already
+defines - and every startup behavior (configuration validation, runtime/checkpointer construction,
+rate limiter setup) still happens inside `api.py`'s existing `lifespan()`, unchanged.
+
+```
+Dockerfile (backend)          -> two-stage build (builder installs requirements-docker.txt,
+                                  runtime stage copies only the backend modules NEXUS needs) ->
+                                  non-root `nexus` user -> `uvicorn api:app --host 0.0.0.0 --port 8000`
+frontend/Dockerfile           -> node stage runs the existing `npm run build` (Vite) ->
+                                  nginx:alpine stage serves the static output; no Node.js
+                                  runtime in the final image; SPA fallback via frontend/nginx.conf
+docker-compose.yml            -> postgres (official image) + api (built from the root Dockerfile,
+                                  NEXUS_DATABASE_URL pointing at postgres) + console (built from
+                                  frontend/Dockerfile) - exercises the existing Phase 5
+                                  AsyncPostgresSaver / access.PostgresAccessStore code path,
+                                  not a new persistence layer
+.github/workflows/ci.yml      -> backend-tests, frontend-tests, postgres-integration (live
+                                  PostgreSQL service container), repo-hygiene, docker-build
+                                  (builds both images + a Compose health/readiness/auth smoke test)
+```
+
+**One image, two backends, chosen at runtime.** `requirements-docker.txt` includes the optional
+`postgres` extra (`langgraph-checkpoint-postgres`, `psycopg[binary,pool]`) alongside the base
+dependencies, so the same built image supports either the SQLite or PostgreSQL backend depending
+on whether `NEXUS_DATABASE_URL` is set at container start - identical to how
+`runtime.create_runtime` already dispatches between them outside Docker (see
+[Database backends: SQLite vs. PostgreSQL (Phase 5)](#database-backends-sqlite-vs-postgresql-phase-5)
+above). `ipykernel` (a notebook-only dependency, never imported by any application module) is
+deliberately excluded from `requirements-docker.txt` to keep the image minimal; this is a new,
+Docker-specific manifest, not a change to `requirements.txt`/`pyproject.toml`.
+
+**Environment-driven configuration, not baked-in secrets.** Every variable in README
+"Configuration" - `NEXUS_API_TOKEN`, `ANTHROPIC_API_KEY`, `NEXUS_DATABASE_URL`, CORS origins, rate
+limits, timeouts - is supplied at container/Compose start (`docker run -e ...` / `.env.docker`,
+gitignored; `.env.docker.example` is the checked-in placeholder template). None are declared as
+Dockerfile `ARG`/`ENV` defaults beyond `NEXUS_ENVIRONMENT=production`, which exists specifically so
+`config.load_config()`'s existing fail-closed rule (production requires a token, or the app refuses
+to start) applies to this image by default rather than silently running development mode. The
+frontend image's `VITE_NEXUS_API_BASE_URL` is the one genuinely build-time value (Vite bakes it into
+the compiled JS bundle, exactly as it already does for `npm run build` outside Docker - see
+[NEXUS Console (Phase 6.1)](#nexus-console-phase-61)); `VITE_NEXUS_API_TOKEN` is deliberately not
+accepted as a build argument, since baking any value into a shared image is a different exposure
+than a developer's own local `.env.local`.
+
+**Compose variable-substitution correctness.** An early draft mapped `ANTHROPIC_MODEL:
+${ANTHROPIC_MODEL:-}` in `docker-compose.yml`'s `environment:` block; this was caught and fixed
+before being reported as done. `dict.get(key, default)` (used by `main.resolve_model_name`) only
+falls back to `DEFAULT_MODEL` when the key is *absent* from the environment, not when it's an empty
+string - so that mapping would have silently broken model resolution for every deployment that
+left `ANTHROPIC_MODEL` unset (the common case). The fix uses Compose's list-form `environment:` with
+a bare `- ANTHROPIC_MODEL` entry, which passes the variable through only when it is actually set in
+`.env.docker`, and omits it from the container entirely otherwise - restoring the correct "absent
+means use the default" semantics `main.py` already relies on.
+
+**What Phase 7 does NOT add:** TLS termination, a reverse proxy, a secrets manager, autoscaling, a
+real cloud deployment target, a distributed rate limiter, or persistent `RunStore`/
+`EvaluationStore` history - none of Phase 5/6's process-local-store limitations are changed by
+containerizing the process that holds them (see
+[Multi-instance analysis (Phase 5)](#multi-instance-analysis-phase-5), still accurate). "Production
+packaging" describes what ships in the image and Compose file, not a claim that the resulting
+deployment is hardened for real production traffic - see README "Known limitations".
+
+**Verification status - read this before trusting any Phase 7 claim.** This development
+environment has neither Docker nor a local PostgreSQL installation (checked: no `docker` binary on
+either `PATH` searched, no Docker Desktop install directory, no `psql`/`pg_ctl`, no PostgreSQL
+install directory). As a direct result:
+
+- The backend and frontend Docker images have not been built in this environment.
+- `docker-compose.yml` has been validated only for YAML/Compose-schema correctness (parsed with
+  PyYAML; the api service's `environment:` list was independently checked for the substitution bug
+  described above) - it has not been run.
+- Live PostgreSQL behavior (checkpoint persistence across a real restart, cross-process ownership
+  enforcement, the four tests `tests/test_postgres_backend.py` skips locally) has not been executed
+  against a real database in this environment.
+- What HAS been verified here: the full backend suite (427 passed, 4 skipped) and full frontend
+  suite (202 passed) still pass unchanged; a targeted check confirmed the backend suite - including
+  `import main` - succeeds with `ANTHROPIC_API_KEY` entirely absent (not merely unset-but-present-
+  in-.env), which is what makes the CI workflow's credential-free design correct rather than
+  aspirational; the frontend production build succeeds; `.github/workflows/ci.yml` and
+  `docker-compose.yml` both parse as valid YAML; a dry run of the CI repository-hygiene job's exact
+  shell commands (credential-pattern, em-dash, merge-conflict scans), run locally against the real
+  working tree including the new Phase 7 files, found no matches.
+- The CI workflow is written to real, documented GitHub Actions and Docker Compose semantics (a
+  `postgres:16-alpine` service container with a health check, `docker compose --env-file ... up
+  --build --wait`, `tests/test_postgres_backend.py`'s existing `NEXUS_TEST_DATABASE_URL` mechanism)
+  and is expected to exercise everything this environment could not - but it had not been observed
+  running as of this writing, since doing so requires a push or pull request this phase did not
+  perform. Treat "the CI workflow exists and is well-formed" and "the CI workflow has been observed
+  to pass" as two different, not-yet-equal claims.
+- The documented Windows/`psycopg`/`ProactorEventLoop` issue (see
+  [Database backends: SQLite vs. PostgreSQL (Phase 5)](#database-backends-sqlite-vs-postgresql-phase-5))
+  does not apply to the container/Compose path even on a Windows Docker Desktop host, since
+  containers always run Linux; it remains relevant only to running the app directly on native
+  Windows against Postgres, which this phase did not newly exercise.

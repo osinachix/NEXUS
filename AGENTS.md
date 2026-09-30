@@ -98,17 +98,25 @@ Completed:
 - Phase 6.6: Tools / Governance (implemented; browser verification blocked by local renderer)
 - Phase 6.7: Run Comparison + guarded fresh re-run (implemented)
 - Phase 6.8: Dashboard + Console Polish (implemented; browser verification blocked by local renderer)
+- Phase 7: Production Packaging (implemented; not yet live-verified - see below)
 
 Current priority:
 
-    Phase 6.8 is implemented; take on another phase only when explicitly scoped
+    Phase 7 is implemented; take on another phase only when explicitly scoped
 
-The planned Phase 7 scope is production packaging. Do not infer or begin that phase from routine
-Console polish.
+Phase 7 added a backend Dockerfile, a frontend Dockerfile, a local Compose stack (PostgreSQL + API +
+Console), and a GitHub Actions CI workflow. It changed no runtime behavior. This development
+environment has neither Docker nor a local PostgreSQL installation, so the image builds, the Compose
+stack, and live PostgreSQL behavior were authored and statically reviewed (YAML validated, a real
+environment-substitution bug in `docker-compose.yml` found and fixed before being reported done, the
+CI repository-hygiene scans dry-run locally) but not executed or observed here. The CI workflow is
+written to exercise all of it for real on the next push/PR - see ARCHITECTURE.md's "Production
+packaging (Phase 7)" section and CLAUDE.md Section 46 for the exact verification boundary before
+treating any Phase 7 claim as live-confirmed.
 
-Phase 7 is production packaging.
-
-Do not implement Phase 7 merely because a feature would eventually be useful.
+Do not implement further deployment work (real cloud target, TLS/reverse proxy, secrets manager,
+distributed rate limiter) merely because it would eventually be useful - that remains future work
+until explicitly scoped, per Section 32 "Do Not Overbuild".
 
 Current verified baseline documented by the previous implementation work:
 

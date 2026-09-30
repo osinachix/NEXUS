@@ -1,0 +1,222 @@
+name: CI
+
+# NEXUS CI (Phase 7). Every job is deterministic and requires no real
+# Anthropic/OpenAI credential, no production secret, and no external paid
+# API -- verified locally before this workflow was written: the full
+# backend test suite (427 passed, 4 skipped) passes with ANTHROPIC_API_KEY
+# entirely unset (see ARCHITECTURE.md's Phase 7 section). The
+# `postgres-integration` job's real-database tests stub the LLM entirely
+# (tests/test_postgres_backend.py's autouse `_fake_llm_calls` fixture), so
+# they need a real PostgreSQL instance but no real model provider.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install backend dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run backend test suite
+        # No ANTHROPIC_API_KEY / .env in this environment -- deliberately
+        # proves the suite needs no real provider credential.
+        run: python -m pytest tests/ -v
+
+  frontend-tests:
+    name: Frontend tests, lint, and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run frontend test suite
+        run: npm test -- --run
+
+      - name: Production build
+        run: npm run build
+
+  postgres-integration:
+    name: PostgreSQL integration tests (live database)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus-ci-password
+          POSTGRES_DB: nexus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install backend + PostgreSQL dependencies
+        # langgraph-checkpoint-postgres / psycopg mirror pyproject.toml's
+        # `postgres` extra -- kept in sync with requirements-docker.txt.
+        run: |
+          pip install -r requirements-dev.txt
+          pip install "langgraph-checkpoint-postgres>=2.0.0" "psycopg[binary,pool]>=3.1.0"
+
+      - name: Run full backend suite against a live PostgreSQL instance
+        # Setting NEXUS_TEST_DATABASE_URL un-skips the 4 real-database
+        # tests in tests/test_postgres_backend.py (checkpoint persistence,
+        # thread isolation, restart persistence, cross-process ownership
+        # denial) -- see that file's module docstring. Every other test in
+        # the suite is unaffected and still runs against its own SQLite
+        # temp files, exactly as in backend-tests above.
+        env:
+          NEXUS_TEST_DATABASE_URL: postgresql://nexus:nexus-ci-password@localhost:5432/nexus_test
+        run: python -m pytest tests/ -v -rs
+
+  repo-hygiene:
+    name: Repository hygiene (secrets, em dash, conflict markers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for credential-shaped patterns (excluding test fixtures)
+        # tests/ intentionally plants fake, clearly-labeled secret-shaped
+        # literals (e.g. "sk-ant-SHOULD-NOT-LEAK-EVAL") to prove they never
+        # leak into logs -- see tests/test_logging_security.py and
+        # tests/test_tool_denial_logging.py. Excluded here for that reason,
+        # not to weaken the scan.
+        run: |
+          set +e
+          MATCHES=$(git grep -InE \
+            'sk-ant-api03-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]{10,}' \
+            -- . ':!tests')
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
+            echo "::error::Potential credential pattern found in tracked content."
+            exit 1
+          fi
+          echo "No credential patterns found."
+
+      - name: Scan for the em dash character (project convention)
+        run: |
+          set +e
+          MATCHES=$(git grep -Il $'\xe2\x80\x94' -- .)
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
+            echo "::error::Em dash character found -- use a hyphen instead (see AGENTS.md/CLAUDE.md)."
+            exit 1
+          fi
+          echo "No em dash characters found."
+
+      - name: Scan for leftover merge-conflict markers
+        run: |
+          set +e
+          MATCHES=$(git grep -InE '^(<<<<<<<|=======$|>>>>>>>)' -- .)
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES"
+            echo "::error::Merge-conflict marker found in tracked content."
+            exit 1
+          fi
+          echo "No merge-conflict markers found."
+
+  docker-build:
+    name: Build container images and smoke-test the Compose stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t nexus-api:ci .
+
+      - name: Build frontend image
+        run: docker build -t nexus-console:ci ./frontend
+
+      - name: Validate docker-compose.yml structurally
+        # .env.docker.example's placeholder values (e.g. "change-me") are
+        # non-empty, so they satisfy compose's ${VAR:?...} required checks
+        # for this structural validation -- no real secret is used or
+        # needed here.
+        run: docker compose --env-file .env.docker.example config
+
+      - name: Prepare a throwaway Compose environment file
+        # Values here are disposable, CI-only placeholders, never used
+        # anywhere else and never real. ANTHROPIC_API_KEY is intentionally
+        # a placeholder: this job only exercises health/readiness/
+        # authentication/session-creation, none of which call a model
+        # provider -- see the comment below on what this job deliberately
+        # does not attempt.
+        run: |
+          cat > .env.docker.ci <<'EOF'
+          POSTGRES_USER=nexus
+          POSTGRES_PASSWORD=ci-postgres-password
+          POSTGRES_DB=nexus
+          NEXUS_API_TOKEN=ci-test-token
+          ANTHROPIC_API_KEY=sk-ant-ci-placeholder-not-a-real-key
+          EOF
+
+      - name: Start the Compose stack (PostgreSQL + API)
+        run: docker compose --env-file .env.docker.ci up --build -d --wait postgres api
+
+      - name: Health check
+        run: curl -sf http://127.0.0.1:8000/health
+
+      - name: Readiness check (real PostgreSQL checkpointer round trip)
+        run: curl -sf http://127.0.0.1:8000/ready
+
+      - name: Authenticate and create a session (Postgres-backed ownership)
+        # Deliberately stops here, before sending a message: executing a
+        # turn would reach the classifier/agent LLM call, which would
+        # require either a real Anthropic credential or a real network
+        # call to Anthropic's API with this placeholder key -- exactly the
+        # "no external paid API" dependency this workflow avoids. The
+        # equivalent execute/persist/restart/ownership-denial validation
+        # against a live database is instead covered deterministically
+        # (LLM calls stubbed) by the postgres-integration job above, via
+        # the existing tests/test_postgres_backend.py suite.
+        run: |
+          RESPONSE=$(curl -sf -X POST http://127.0.0.1:8000/v1/sessions \
+            -H "Authorization: Bearer ci-test-token")
+          echo "$RESPONSE"
+          echo "$RESPONSE" | python3 -c "import sys, json; d = json.load(sys.stdin); assert d.get('thread_id'), d"
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose --env-file .env.docker.ci logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose --env-file .env.docker.ci down -v

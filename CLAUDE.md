@@ -1621,9 +1621,20 @@ Phase 6.7 (NEXUS Console: Run Comparison + Re-run) is **implemented; automated v
 
 Phase 6.8 (NEXUS Console: Dashboard + Console Polish) is **implemented; automated verification complete** - see Section 45.
 
+Phase 7 (Production Packaging) is **implemented; not yet live-verified** - see Section 46. A
+backend Dockerfile, a frontend Dockerfile, a local Compose stack (PostgreSQL + API + Console), and
+a GitHub Actions CI workflow all exist and were statically reviewed (YAML validated, the api
+service's environment substitution logic specifically checked for a bug that was found and fixed
+before being reported as done, the repository-hygiene scans dry-run against the real working tree).
+None of the image builds, the Compose stack, or live PostgreSQL behavior have been executed in this
+development environment, which has neither Docker nor a local PostgreSQL installation - see Section
+46 for the exact boundary between what was authored/reviewed and what remains genuinely unverified.
+
 The immediate priority is now:
 
-    No additional Console phase is currently in scope
+    No additional Console phase is currently in scope. The first real Docker/CI environment
+    should be used to observe the Phase 7 CI workflow actually running, and to perform the
+    live PostgreSQL validation this development environment could not.
 
 Extend the existing `frontend/` application only when the user explicitly scopes further work, on top of the stable API and
 runtime created by Phases 0-5 and the Console foundation (API client,
@@ -1637,7 +1648,9 @@ execution surface, or a second trace renderer alongside
 
 Do not prematurely build later Console sections before explicitly asked
 to - "complete" above refers only to each phase's own stated scope, not
-a signal to keep going without instruction.
+a signal to keep going without instruction. The same applies to Phase 7: do not begin cloud
+deployment, TLS/reverse-proxy configuration, or a distributed rate limiter/RunStore without an
+explicit, separately scoped request.
 
 ---
 
@@ -1763,3 +1776,79 @@ independent loading, empty, retry, and error states.
 - Verification: backend **427 passed, 4 skipped**; frontend **202 passed across 30 test files**;
   production build passed; lint completed with existing warnings outside new Phase 6.8 files.
   Browser verification was attempted once after implementation and blocked by the local renderer.
+
+---
+
+# 46. Phase 7 - Production Packaging
+
+Phase 7 packages the existing platform for deployment: a backend Dockerfile, a frontend Dockerfile,
+a local Compose stack, and a GitHub Actions CI workflow. It changes no runtime behavior - not
+`NexusRuntime`, not `api.py`, not any Console feature. A container is a deployment wrapper, not a
+second runtime: the backend image's only job is running `uvicorn api:app`, the exact ASGI app object
+`api.py` already defines, and every startup behavior still happens inside its existing `lifespan()`.
+
+- `Dockerfile` (root): two-stage build. `requirements-docker.txt` (new) mirrors
+  `requirements.txt`/`pyproject.toml`'s dependencies plus the optional `postgres` extra, minus
+  `ipykernel` (a notebook-only dependency never imported by application code) - one image supports
+  both the SQLite and PostgreSQL backends, selected at runtime by `NEXUS_DATABASE_URL`, exactly as
+  `runtime.create_runtime` already dispatches outside Docker. Runs as a dedicated non-root `nexus`
+  user. `NEXUS_ENVIRONMENT=production` is the only baked-in default, specifically so the existing
+  `config.load_config()` fail-closed rule (production requires `NEXUS_API_TOKEN`) applies without a
+  deployer needing to remember to set it. `HEALTHCHECK` uses the existing `GET /ready` endpoint.
+- `frontend/Dockerfile`: builds the existing `npm run build` (Vite, unchanged) and serves the static
+  output with nginx (`frontend/nginx.conf`, SPA fallback to `index.html`) - no Node.js runtime in
+  the final image. `VITE_NEXUS_API_BASE_URL` is a Vite build-time value (baked into the compiled JS,
+  exactly as it already works outside Docker); `VITE_NEXUS_API_TOKEN` is deliberately not accepted
+  as a build argument, since a shared/distributed image is a different exposure than a developer's
+  local `.env.local`.
+- `docker-compose.yml`: PostgreSQL + the API (`NEXUS_DATABASE_URL` pointing at it) + the Console -
+  exercises the existing Phase 5 `AsyncPostgresSaver`/`access.PostgresAccessStore` code path, not a
+  new persistence layer. PostgreSQL and the API are both bound to `127.0.0.1` only, not `0.0.0.0`.
+  Required variables (`NEXUS_API_TOKEN`, `ANTHROPIC_API_KEY`, `POSTGRES_PASSWORD`) use Compose's
+  `${VAR:?message}` required-substitution form - a missing value fails immediately with a clear
+  message rather than starting with an empty credential. `.env.docker.example` (checked in,
+  placeholder values only) documents them; `.env.docker` (gitignored) holds real values.
+- **A real bug was found and fixed during this phase, not after being reported as done**: an early
+  draft mapped `ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}` in the api service's `environment:` block.
+  `main.resolve_model_name`'s `env.get("ANTHROPIC_MODEL", DEFAULT_MODEL)` only falls back to the
+  pinned default when the key is *absent*, not when it's an empty string - that mapping would have
+  silently broken model resolution for every deployment that left `ANTHROPIC_MODEL` unset (the
+  common case). Fixed by switching the api service's `environment:` to Compose's list form with a
+  bare `- ANTHROPIC_MODEL` entry, which passes the variable through only when actually set and omits
+  it entirely otherwise - restoring the "absent means use the default" semantics `main.py` relies on.
+- `.github/workflows/ci.yml`: `backend-tests` (pytest, no credential); `frontend-tests` (vitest,
+  oxlint, `npm run build`); `postgres-integration` (a real, disposable `postgres:16-alpine` GitHub
+  Actions service container - runs the full backend suite with `NEXUS_TEST_DATABASE_URL` set,
+  un-skipping the 4 tests in `tests/test_postgres_backend.py` that skip locally; the LLM is stubbed
+  by that file's existing autouse fixture, so this needs a real database but no real model provider);
+  `repo-hygiene` (credential-pattern, em-dash, and merge-conflict-marker scans via `git grep` over
+  tracked content); `docker-build` (builds both images, validates `docker-compose.yml` structurally
+  via `docker compose config`, then runs a Compose health/readiness/authenticate/create-session
+  smoke test with a placeholder Anthropic key - deliberately stopping before sending a message, since
+  that would require either a real provider credential or a real network call to Anthropic, exactly
+  what this workflow's credential-free design avoids; the equivalent execute/persist/restart/
+  ownership-denial validation against a live database is covered deterministically by
+  `postgres-integration` instead).
+- **Verification boundary - stated exactly, not glossed over.** This development environment has
+  neither Docker nor a local PostgreSQL installation (checked directly: no `docker` binary, no
+  Docker Desktop install directory, no `psql`/`pg_ctl`, no PostgreSQL install directory). As a
+  result, the image builds, the Compose stack, and live PostgreSQL behavior have not been executed
+  or observed here. What WAS verified here: the full backend suite (427 passed, 4 skipped) and full
+  frontend suite (202 passed) still pass unchanged after every Phase 7 file was added; a targeted
+  check confirmed the backend suite - including `import main` - passes with `ANTHROPIC_API_KEY`
+  entirely absent (the `.env` file was moved aside and restored immediately afterward, verified
+  identical), which is what makes the CI workflow's credential-free design a verified fact rather
+  than an assumption; the frontend production build succeeds; `docker-compose.yml` and
+  `.github/workflows/ci.yml` both parse as valid YAML; the CI repository-hygiene job's exact shell
+  commands were dry-run locally against the real working tree, including the new Phase 7 files
+  themselves, and found no matches. The CI workflow is written to real, documented GitHub
+  Actions/Docker Compose semantics, but had not been observed running as of this writing, since
+  exercising it requires a push or pull request this phase did not perform. Do not treat "the
+  workflow exists and is well-formed" as equivalent to "the workflow has been observed to pass."
+- The documented Windows/`psycopg`/`ProactorEventLoop` issue does not apply to the container/Compose
+  path even on a Windows Docker Desktop host, since containers always run Linux; it remains relevant
+  only to running the app directly on native Windows against Postgres, unchanged from Phase 5.
+- Not added, and explicitly out of scope for this phase: TLS termination, a reverse proxy, a
+  secrets manager, autoscaling, a real cloud deployment target, image digest pinning, container
+  vulnerability scanning, a distributed rate limiter, or persistent `RunStore`/`EvaluationStore`
+  history. See SECURITY.md Section 22 and README "Known limitations".

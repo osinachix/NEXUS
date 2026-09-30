@@ -1,0 +1,98 @@
+# NEXUS local, production-like Compose stack (Phase 7).
+#
+# Brings up the NEXUS API against a real PostgreSQL database, exercising
+# the existing Phase 5 implementation (runtime.create_runtime's Postgres
+# branch: AsyncPostgresSaver + access.PostgresAccessStore) -- this file
+# does not add a new persistence layer or replace either of those. The
+# optional `console` service builds and serves the existing Vite production
+# build (see frontend/Dockerfile); it is a pure HTTP client of `api`, never
+# a second execution path.
+#
+# Usage:
+#   cp .env.docker.example .env.docker   # then fill in real values
+#   docker compose --env-file .env.docker up --build
+#
+# This is a "production-like" local stack for development and validation,
+# not a production deployment topology (no TLS termination, no reverse
+# proxy, no secrets manager, no horizontal scaling -- see README.md
+# "Known limitations" / ARCHITECTURE.md's Phase 7 section).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set -- see .env.docker.example}
+      POSTGRES_DB: ${POSTGRES_DB:-nexus}
+    volumes:
+      - nexus-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus} -d ${POSTGRES_DB:-nexus}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Bound to localhost only, not 0.0.0.0 -- this database is for the
+    # `api` service and local inspection/validation, not public exposure
+    # (see SECURITY.md's container review).
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # List form (not the KEY: value mapping form) specifically so a bare
+      # `ANTHROPIC_MODEL` entry below can pass the variable through only
+      # when it's actually set in .env.docker, and omit it entirely
+      # otherwise -- main.py's resolve_model_name() falls back to its
+      # pinned DEFAULT_MODEL only when the key is absent, not when it's an
+      # empty string, so a `${ANTHROPIC_MODEL:-}`-style mapping entry would
+      # incorrectly override the default with an empty value.
+      - NEXUS_ENVIRONMENT=${NEXUS_ENVIRONMENT:-production}
+      - NEXUS_API_TOKEN=${NEXUS_API_TOKEN:?NEXUS_API_TOKEN must be set -- see .env.docker.example}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set -- see .env.docker.example}
+      - ANTHROPIC_MODEL
+      # Exercises the existing Postgres branch in runtime.create_runtime --
+      # the same NEXUS_DATABASE_URL mechanism already documented in
+      # ARCHITECTURE.md / README.md, not a Docker-specific code path.
+      - NEXUS_DATABASE_URL=postgresql://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nexus}
+      - NEXUS_CONSOLE_ORIGINS=${NEXUS_CONSOLE_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      - NEXUS_RATE_LIMIT_REQUESTS=${NEXUS_RATE_LIMIT_REQUESTS:-60}
+      - NEXUS_RATE_LIMIT_WINDOW_SECONDS=${NEXUS_RATE_LIMIT_WINDOW_SECONDS:-60}
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  console:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the compiled JS bundle at build time (see
+        # frontend/src/lib/config.ts) -- the browser reaches the API at
+        # this host:port directly, not through this container. Defaults to
+        # the api service's published port on the host running Compose.
+        VITE_NEXUS_API_BASE_URL: ${NEXUS_CONSOLE_API_BASE_URL:-http://127.0.0.1:8000}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:5173:80"
+
+volumes:
+  # Named volume so checkpoint/ownership state survives `docker compose
+  # restart`/`down` (without -v) -- this is what makes the restart-
+  # persistence validation in the Phase 7 report meaningful. `down -v`
+  # or removing the volume discards it, same as deleting a SQLite file.
+  nexus-postgres-data:
