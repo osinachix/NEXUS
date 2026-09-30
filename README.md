@@ -11,7 +11,7 @@ deterministic security policy around tool execution, and emits structured observ
 for every step. It's domain-agnostic - nothing here assumes a particular business or industry.
 
 > **Status: not production-ready - a production-oriented foundation.** This is an incrementally-built
-> learning/interview project, with **Phase 6.8 implemented; browser verification is blocked by the local renderer** (see
+> project, with **Phase 6.8 implemented; browser verification is blocked by the local renderer** (see
 > [Roadmap](#roadmap) below). It has
 > real error handling, bounded retries/timeouts, durable thread-scoped state, structured
 > observability, a deterministic tool/network security boundary, a thin FastAPI layer over the
