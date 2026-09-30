@@ -470,7 +470,7 @@ def _load_console_origins() -> list[str]:
 app = FastAPI(
     title="NEXUS API",
     description="AI Agent Runtime & Orchestration Platform - Connect. Orchestrate. Execute. Observe.",
-    version="0.1.0",
+    version="0.7.0",
     lifespan=lifespan,
 )
 

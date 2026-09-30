@@ -1,7 +1,9 @@
 {
-  "name": "frontend",
+  "name": "nexus-console",
+  "description": "NEXUS Console - the web UI for the NEXUS AI Agent Runtime & Orchestration Platform.",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.7.0",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -3,6 +3,8 @@
 **AI Agent Runtime & Orchestration Platform**
 *Connect. Orchestrate. Execute. Observe.*
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 NEXUS is a LangGraph-based agent runtime that classifies each message you send, routes it to one
 of four specialist agents, persists conversation state per thread/session, enforces a
 deterministic security policy around tool execution, and emits structured observability events
@@ -62,6 +64,7 @@ model and every control's implementation/test status, see **[SECURITY.md](SECURI
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
 - [Recommended next steps](#recommended-next-steps)
+- [License](#license)
 
 ## Roadmap
 
@@ -155,8 +158,13 @@ model and every control's implementation/test status, see **[SECURITY.md](SECURI
   cross-links. No aggregate analytics service or new persistence was added. See [NEXUS Console](#nexus-console).
 - **Remaining Console work** - broader metrics and final visual polish as needed; see
   [Recommended next steps](#recommended-next-steps).
-- **Phase 7 - Production Packaging (planned)** - containerization, CI/CD, deployment configuration;
-  not yet designed.
+- **Phase 7 - Production Packaging (implemented; not yet live-verified)** - a backend Dockerfile,
+  a frontend Dockerfile, a local Compose stack (PostgreSQL + API + Console), and a GitHub Actions
+  CI workflow. This development environment has neither Docker nor a local PostgreSQL installation,
+  so the image builds, the Compose stack, and live PostgreSQL behavior were authored and statically
+  reviewed but not executed or observed here - the CI workflow is written to validate all of it on
+  the next push/PR. See [Running with Docker](#running-with-docker) and
+  [Known limitations](#known-limitations).
 
 ## Overview
 
@@ -528,16 +536,32 @@ which checkpointer backend is configured).
 ## NEXUS Console
 
 The **NEXUS Console** is a TypeScript/React frontend (`frontend/`) and a pure client of the API
-described above. Its current surfaces are Playground, Agents, Runs, Sessions, and Evaluations:
+described above. Its current surfaces are Dashboard, Playground, Agents, Runs, Sessions,
+Evaluations, and Tools:
 
 ```
 NEXUS Console -> NEXUS API -> NexusRuntime -> LangGraph -> Agents / Tools
 ```
 
 The Console never imports Python, calls LangGraph, or duplicates runtime logic. Its typed HTTP and
-SSE clients call the API for health, agents, sessions, runs, and evaluations, including the
+SSE clients call the API for health, agents, sessions, runs, evaluations, and tools, including the
 existing synchronous evaluation and comparison endpoints. See
 [ARCHITECTURE.md](ARCHITECTURE.md#nexus-console-phase-61) for the frontend architecture.
+
+**Pages at a glance** (a plain-language tour before the phase-by-phase detail below):
+
+| Page | Route | What it shows |
+|---|---|---|
+| Dashboard | `/` | Home overview: recent runs, outcomes, mean duration, token/cost coverage, evaluation summaries, and agent/tool status, all assembled from the bounded APIs below - not a separate analytics service |
+| Playground | `/playground` | Send a message to NEXUS interactively - Auto Route (classifier picks the agent) or Direct Agent (pick one of the four yourself) - and watch the live execution trace as it happens over SSE |
+| Agents | `/agents` | The agent registry: each of the four reference agents' description, live status, tools, and capabilities, with a "Test Agent" link into the Playground |
+| Runs | `/runs` | Searchable/filterable history of completed executions (status, agent, route, timing, tokens, cost); Run Detail replays the full execution trace and supports factual comparison and a guarded fresh re-run |
+| Sessions | `/sessions` | Persisted conversation/thread state (distinct from Runs - see [History semantics](#history-semantics)), with the full message history per thread |
+| Evaluations | `/evaluations` | Trigger the checked-in deterministic evaluation dataset, then inspect pass/fail rates, per-case results, and factual comparisons between two evaluation runs |
+| Tools | `/tools` | Read-only registry of tools bound to agents (currently `fetch`), the controls enforced on them, and recent completed/denied/failed tool activity |
+
+Every page reads real data from the running API - there are no mocked or placeholder values in the
+UI; an unavailable metric renders as "Not reported," never a fabricated number.
 
 **What Phase 6.1 delivers - the Agent Playground:**
 
@@ -1083,8 +1107,8 @@ React Testing Library for tests. No UI component or icon library - see
 
 ```bash
 # 1. Clone and enter the project
-git clone <this-repo-url>
-cd "LangGraph Multi-Agent Router"
+git clone https://github.com/osinachix/LangGraph-Multi-Agent-Router.git
+cd LangGraph-Multi-Agent-Router
 
 # 2. Create and activate a virtual environment
 python -m venv .venv
@@ -1610,3 +1634,9 @@ Other future work includes deterministic replay, a distributed rate limiter, a b
 for larger evaluations, persistent RunStore/EvaluationStore history, real user accounts/OAuth/SSO/RBAC,
 TLS termination/reverse proxy/secrets-manager integration, and a real cloud deployment target. These
 items remain outside the current scope unless explicitly requested.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). You may use, modify, and distribute this
+project, including commercially, provided you comply with the license's attribution and notice
+terms - see the [LICENSE](LICENSE) file for the full text.

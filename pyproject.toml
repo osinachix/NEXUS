@@ -1,8 +1,9 @@
 [project]
-name = "multi-agent-router"
-version = "0.1.0"
-description = "A LangGraph chatbot that classifies each message and routes it to a specialist agent (counselor, logical, math, or coding)."
+name = "nexus"
+version = "0.7.0"
+description = "NEXUS: AI Agent Runtime & Orchestration Platform - a LangGraph-based multi-agent runtime with a FastAPI service layer, deterministic tool security, an evaluation framework, and a React console."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "ipykernel>=6.29.5",
